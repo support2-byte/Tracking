@@ -1,0 +1,20 @@
+{
+  "name": "shipment-tracker",
+  "version": "1.0.0",
+  "description": "Simple shipment tracker demo (front-end + example Node API)",
+  "main": "api/getShipment.js",
+    "type": "module",
+  "scripts": {
+    "start": "node api/getShipment.js"
+  },
+  "dependencies": {
+    "dotenv": "^17.2.3",
+    "express": "^4.21.2",
+    "node": "^25.1.0",
+    "node-fetch": "^3.3.2"
+  },
+  "devDependencies": {},
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}
