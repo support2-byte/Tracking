@@ -5,43 +5,49 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <style rel="stylesheet" href="https://royalgulfshipping.com/wp-content/themes/volport/assets/css/volport-core.css">
     </style>
+    <script src="https://www.google.com/recaptcha/api.js?render=6Lf3iwUsAAAAAHWrKYHEaUR3kt_fNg2S7J3VHYfK"></script>
 
-
-<script src="https://www.google.com/recaptcha/api.js?render=6LcwLggsAAAAAFZgnOZxt7uNKO3DtCU_nfJ9evLl"></script>
 <script>
-window.onload = async () => {
-  const loader = document.getElementById('loader');
-  const loaderH2 = loader ? loader.querySelector('h2') : null;
-  const loaderP = loader ? loader.querySelector('p') : null;
+window.onload = () => {
+  grecaptcha.ready(async () => {
+    const loader = document.getElementById('loader');
+    const loaderH2 = loader ? loader.querySelector('h2') : null;
+    const loaderP = loader ? loader.querySelector('p') : null;
+    
+    try {
+      // 1️⃣ Execute reCAPTCHA v3
+      const token = await grecaptcha.execute('6Lf3iwUsAAAAAHWrKYHEaUR3kt_fNg2S7J3VHYfK', { action: 'homepage' });
 
-  try {
-    const token = await grecaptcha.execute('6LcwLggsAAAAAFZgnOZxt7uNKO3DtCU_nfJ9evLl', { action: 'homepage' });
+      // 2️⃣ Send token to backend for verification
+      const res = await fetch('/api/verify-recaptcha', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token })
+      });
 
-    // Send token to backend for verification
-    const res = await fetch('/api/verifyRecaptcha', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token })
-    });
-    const data = await res.json();
+      const data = await res.json();
 
-    if (data.success) {
-      if (loader) loader.style.display = 'none';
-      const content = document.getElementById('content');
-      if (content) content.style.display = 'block';
-    } else {
-      if (loaderH2) loaderH2.textContent = 'Verification failed!';
-      if (loaderP) loaderP.textContent = 'Please refresh and try again.';
-      console.error('reCAPTCHA failed:', data);
+      if (data.success) {
+        // 3️⃣ Show main content if verification succeeds
+        if (loader) loader.style.display = 'none';
+        const content = document.getElementById('content');
+        if (content) content.style.display = 'block';
+      } else {
+        if (loaderH2) loaderH2.textContent = 'Verification failed!';
+        if (loaderP) loaderP.textContent = 'Please refresh and try again.';
+        console.error('reCAPTCHA failed:', data);
+      }
+
+    } catch (err) {
+      if (loaderH2) loaderH2.textContent = 'Error verifying!';
+      if (loaderP) loaderP.textContent = 'Check console for details.';
+      console.error('reCAPTCHA verification error:', err);
     }
-
-  } catch (err) {
-    if (loaderH2) loaderH2.textContent = 'Error verifying!';
-    if (loaderP) loaderP.textContent = 'Check console for details.';
-    console.error('reCAPTCHA verification error:', err);
-  }
+  });
 };
 </script>
+
+
 
 <title>Royal Gulf Shipping | Track Your Shipment</title>
     <style>
@@ -1519,7 +1525,6 @@ window.onload = async () => {
       </div>
     </div>
   </div>
-<script src="https://www.google.com/recaptcha/api.js?render=6LcwLggsAAAAAFZgnOZxt7uNKO3DtCU_nfJ9evLl"></script>
 
   <main class="container1">
 
