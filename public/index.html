@@ -1497,9 +1497,9 @@
       </div>
 
       <div class="route" id="route" style="display:none;">
-        <span id="pol">KARACHI PORT</span>
+        <span id="pol"></span>
         <span class="arrow">➜</span>
-        <span id="pod">DUBAI - JEBEL ALI</span>
+        <span id="pod"></span>
       </div>
 
       <div class="last-updated" id="lastUpdated" style="display:none;">Last updated on: —</div>
@@ -1815,8 +1815,8 @@
                 const etaDate = latest.ETA ? new Date(latest.ETA) : null;
                 const eta = etaDate ? rgsFmtDate(etaDate) : "—";
                 const shipment = filtered[0];
-                rgsCurrentPol = shipment['POL'] || 'KARACHI PORT';
-                rgsCurrentPod = shipment['POD'] || 'DUBAI - JEBEL ALI';
+                rgsCurrentPol = shipment['POL'] ||  "—";
+                rgsCurrentPod = shipment['POD'] ||  "—";
 
                 const allLogs = responseData.logs || [];
                 const consignmentID = latest['ConsignmentID'] || '';
