@@ -5,47 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <style rel="stylesheet" href="https://royalgulfshipping.com/wp-content/themes/volport/assets/css/volport-core.css">
     </style>
-    <script src="https://www.google.com/recaptcha/api.js?render=6Lf3iwUsAAAAAHWrKYHEaUR3kt_fNg2S7J3VHYfK"></script>
 
-<script>
-window.onload = () => {
-  grecaptcha.ready(async () => {
-    const loader = document.getElementById('loader');
-    const loaderH2 = loader ? loader.querySelector('h2') : null;
-    const loaderP = loader ? loader.querySelector('p') : null;
-    
-    try {
-      // 1️⃣ Execute reCAPTCHA v3
-      const token = await grecaptcha.execute('6Lf3iwUsAAAAAHWrKYHEaUR3kt_fNg2S7J3VHYfK', { action: 'homepage' });
-
-      // 2️⃣ Send token to backend for verification
-      const res = await fetch('/api/verify-recaptcha', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token })
-      });
-
-      const data = await res.json();
-
-      if (data.success) {
-        // 3️⃣ Show main content if verification succeeds
-        if (loader) loader.style.display = 'none';
-        const content = document.getElementById('content');
-        if (content) content.style.display = 'block';
-      } else {
-        if (loaderH2) loaderH2.textContent = 'Verification failed!';
-        if (loaderP) loaderP.textContent = 'Please refresh and try again.';
-        console.error('reCAPTCHA failed:', data);
-      }
-
-    } catch (err) {
-      if (loaderH2) loaderH2.textContent = 'Error verifying!';
-      if (loaderP) loaderP.textContent = 'Check console for details.';
-      console.error('reCAPTCHA verification error:', err);
-    }
-  });
-};
-</script>
+  <script src="https://www.google.com/recaptcha/enterprise.js?render=6Lf3iwUsAAAAAE7483DEwqV2gbxBZIqMi9EP06Kd"></script>
 
 
 
@@ -1483,11 +1444,11 @@ window.onload = () => {
   <h2>Verifying...</h2>
   <p>Please wait while we verify you are human.</p>
 </div>
+<!-- <div class="g-recaptcha" data-sitekey="6Lf3iwUsAAAAAE7483DEwqV2gbxBZIqMi9EP06Kd"></div> -->
 
 <main id="content" style="display:none;">
-  <!-- Shipment tracker HTML -->
-</main>
 
+    </main>
   <div class="top-bar">
     <div class="top-bar-left">
       <a href="tel:+97148888888"><i class="fas fa-phone-alt"></i> +971 4 888 8888</a>
@@ -1585,7 +1546,6 @@ window.onload = () => {
     <section class="panel" id="timelinePanel" style="display:none;"></section>
 
   </main>
-<div class="g-recaptcha"></div>
   <!-- Notification Modal -->
   <div class="rgs-modal-overlay" id="rgsNotifyModal">
     <div class="rgs-modal">
@@ -1683,6 +1643,7 @@ window.onload = () => {
         <p><a href="https://royalgulfshipping.com/privacy-policy-2">Privacy & Policy</a> | <a
                 href="https://royalgulfshipping.com/terms-and-conditions/">Terms & Conditions</a></p>
     </div>
+
 <script>
   // ========== Configuration ==========
   const PUBLIC_KEY     = 'FRONTEND_KEY_ABC123'; // same as in .env
@@ -2082,7 +2043,62 @@ window.onload = () => {
         })();
     </script>
 
-  
+   <script>
+    const BACKEND_URL = "https://tracking-2yq6.onrender.com";
+    const SITE_KEY = "6Lf3iwUsAAAAAE7483DEwqV2gbxBZIqMi9EP06Kd";
+
+    // Function to dynamically load the reCAPTCHA script
+    function loadRecaptchaScript(siteKey) {
+      return new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = `https://www.google.com/recaptcha/api.js?render=${siteKey}`;
+        script.async = true;
+        script.defer = true;
+        script.onload = () => resolve();
+        script.onerror = () => reject(new Error("Failed to load reCAPTCHA"));
+        document.head.appendChild(script);
+      });
+    }
+
+    async function initRecaptcha() {
+      const loader = document.getElementById('loader');
+      const loaderH2 = loader ? loader.querySelector('h2') : null;
+      const loaderP = loader ? loader.querySelector('p') : null;
+
+      try {
+        await loadRecaptchaScript(SITE_KEY);
+
+        grecaptcha.ready(async () => {
+          const token = await grecaptcha.execute(SITE_KEY, { action: 'homepage' });
+
+const res = await fetch('https://tracking-2yq6.onrender.com/api/verify-recaptcha', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ token })
+});
+
+          const data = await res.json();
+
+          if (data.success) {
+            if (loader) loader.style.display = 'none';
+            const content = document.getElementById('content');
+            if (content) content.style.display = 'block';
+          } else {
+            if (loaderH2) loaderH2.textContent = 'Verification failed!';
+            if (loaderP) loaderP.textContent = 'Please refresh and try again.';
+            console.error('reCAPTCHA failed:', data);
+          }
+        });
+
+      } catch (err) {
+        if (loaderH2) loaderH2.textContent = 'Error verifying!';
+        if (loaderP) loaderP.textContent = 'Check console for details.';
+        console.error('reCAPTCHA verification error:', err);
+      }
+    }
+
+    window.onload = initRecaptcha;
+  </script>
 </body>
 
 </html>
