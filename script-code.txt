@@ -1,0 +1,989 @@
+/***********************************************************************
+ * ROYAL GULF SHIPPING & LOGISTICS LLC
+ * Final Stable Cascade + Email on "Ready for Loading"
+ * Compatible with dropdown-based Client Master
+ * Added: Status Logs sheet for tracking changes
+ * Updated: Reduced cascade logging to avoid duplication; Filtered empty rows in doGet
+ * FIXED: Use ISO timestamp in logs for consistent JSON serialization
+ * NEW: Admin email notification on manual status changes
+ * UPDATED: Custom HTML email template for shipment notifications
+ * FIXED: Cascade email loops to remove redundant status check (use inner validation)
+ * FIXED: Normalize null/undefined in v() to prevent falsy values; Default params in buildOrderEmailHTML to avoid test warnings
+ * FIXED: Merged duplicates, added missing functions, enhanced error handling
+ * FIXED: Syntax errors in sendStatusChangeEmail (extra commas, misplaced code); Reorganized functions
+ * FIXED: Incomplete subject in sendShipmentEmail; Removed misplaced Logger.log in buildOrderEmailHTML
+ ***********************************************************************/
+
+const ADMIN_EMAIL = 'support2@royalgulfshipping.com';
+
+/* =========================
+   MAIN TRIGGER WRAPPER
+   ========================= */
+function onEdit(e) {
+  try {
+    if (!e) return;
+    handleStatusChange(e);
+  } catch (err) {
+    Logger.log("onEdit error: " + err);
+  }
+}
+
+/* =========================
+   MAIN LOGIC
+   ========================= */
+function handleStatusChange(e) {
+  try {
+    const sh = e.source.getActiveSheet();
+    const rng = e.range;
+    const newStatus = rng.getValue();
+    const oldStatus = e.oldValue || '';
+    const sheetName = key(sh.getName());
+    const col = rng.getColumn();
+    const user = Session.getActiveUser().getEmail(); // Log the user who made the change
+
+    // Only proceed if status actually changed
+    if (key(newStatus) === key(oldStatus)) return;
+
+    // === CONSIGNMENTS ===
+    if (sheetName === key('Consignments')) {
+      const statusCol = getCol('Status', sh);
+      if (statusCol !== col) return;
+      const row = rng.getRow();
+      const consignmentID = sh.getRange(row, getCol('ConsignmentID', sh)).getValue();
+      
+      // Log the initial change
+      logStatusChange('Consignments', consignmentID, oldStatus, newStatus, user);
+      
+      const now = new Date();
+      const eta = calculateETA(newStatus, now);
+      sh.getRange(row, getCol('ETA', sh)).setValue(eta);
+      sh.getRange(row, getCol('LastUpdated', sh)).setValue(now);
+
+      updateContainersAndOrders(consignmentID, newStatus, eta, now, user); // Pass user for cascade logs
+
+      if (key(newStatus) === key('Ready for Loading')) {
+        emailOrdersForConsignment(consignmentID);
+      }
+      return;
+    }
+
+    // === CONTAINERS ===
+    if (sheetName === key('Containers')) {
+      const statusCol = getCol('Status', sh);
+      if (statusCol !== col) return;
+      const row = rng.getRow();
+      const trip = sh.getRange(row, getCol('ContainerTripID', sh)).getValue();
+      
+      // Log the initial change
+      logStatusChange('Containers', trip, oldStatus, newStatus, user);
+      
+      const now = new Date();
+      const eta = calculateETA(newStatus, now);
+      sh.getRange(row, getCol('ETA', sh)).setValue(eta);
+      sh.getRange(row, getCol('LastUpdated', sh)).setValue(now);
+
+      updateOrdersByContainer(trip, newStatus, eta, now, user); // Pass user for cascade logs
+
+      if (key(newStatus) === key('Ready for Loading')) {
+        emailOrdersForContainer(trip);
+      }
+      return;
+    }
+
+    // === ORDERS ===
+    if (sheetName === key('Orders')) {
+      const statusCol = getCol('Status', sh);
+      if (statusCol !== col) return;
+      const row = rng.getRow();
+      let refID = sh.getRange(row, getCol('Ref ID', sh)).getValue();
+      
+      // Auto-generate Ref ID if missing
+      if (!refID) {
+        refID = 'RGSL-ORD-' + Math.random().toString(36).substring(2, 8).toUpperCase();
+        sh.getRange(row, getCol('Ref ID', sh)).setValue(refID);
+        Logger.log(`Auto-generated Ref ID: ${refID} for row ${row}`);
+      }
+      
+      // Log the initial change
+      logStatusChange('Orders', refID, oldStatus, newStatus, user);
+      
+      const now = new Date();
+      const eta = calculateETA(newStatus, now);
+      sh.getRange(row, getCol('ETA', sh)).setValue(eta);
+      sh.getRange(row, getCol('LastUpdated', sh)).setValue(now);
+
+      if (key(newStatus) === key('Ready for Loading')) {
+        emailOrderRowIfNotAlreadySent(row);
+      }
+      return;
+    }
+
+    // === AUTO REF ID ===
+    autoGenerateOrderRefID(e);
+  } catch (err) {
+    Logger.log(`handleStatusChange error: ${err}`);
+  }
+}
+
+/***********************************************************************
+ * STATUS LOGGING - ENHANCED: Fixed columns, better error handling
+ * NEW: Send admin email for manual changes
+ ***********************************************************************/
+function logStatusChange(sheetName, entityID, oldStatus, newStatus, user, isCascade = false) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let logSheet = ss.getSheetByName('Status Logs');
+  const expectedHeaders = ['Timestamp', 'Sheet', 'Entity ID', 'Old Status', 'New Status', 'User', 'Type'];
+  
+  if (!logSheet) {
+    logSheet = ss.insertSheet('Status Logs');
+    logSheet.getRange(1, 1, 1, expectedHeaders.length).setValues([expectedHeaders]);
+    logSheet.getRange(1, 1, 1, expectedHeaders.length).setFontWeight('bold');
+  } else {
+    // Ensure headers match (reset if corrupted)
+    const currentHeaders = logSheet.getRange(1, 1, 1, expectedHeaders.length).getValues()[0];
+    if (currentHeaders.join('|') !== expectedHeaders.join('|')) {
+      logSheet.getRange(1, 1, 1, expectedHeaders.length).setValues([expectedHeaders]);
+      logSheet.getRange(1, 1, 1, expectedHeaders.length).setFontWeight('bold');
+      Logger.log('Reset corrupted Status Logs headers');
+    }
+  }
+
+  const now = new Date().toISOString();
+  const type = isCascade ? 'Cascade Update' : 'Manual Edit';
+  logSheet.appendRow([now, sheetName, entityID || '', oldStatus || '', newStatus || '', user || '', type]);
+  
+  // Auto-sort by timestamp descending (newest first)
+  const lastRow = logSheet.getLastRow();
+  if (lastRow > 1) {
+    logSheet.getRange(2, 1, lastRow - 1, expectedHeaders.length).sort({column: 1, ascending: false});
+  }
+  
+  Logger.log(`Status log added: ${sheetName} - ${entityID} from "${oldStatus}" to "${newStatus}" by ${user} (${type})`);
+
+  // NEW: Send admin email only for manual edits
+  if (type === 'Manual Edit' && ADMIN_EMAIL) {
+    sendStatusChangeEmail(user, sheetName, entityID, oldStatus, newStatus);
+  }
+}
+
+/***********************************************************************
+ * ADMIN STATUS CHANGE EMAIL - FIXED: Syntax, joins, and organization
+ ***********************************************************************/
+function sendStatusChangeEmail(user, sheetName, entityID, oldStatus, newStatus) {
+  const tz = SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone();
+  const now = Utilities.formatDate(new Date(), tz, 'dd MMM yyyy, HH:mm');
+  
+  // Dynamic data fetch - Enhanced for cross-sheet joins (e.g., Consignments -> Orders)
+  let refId = entityID;  // Default to entityID
+  let orderId = sheetName;  // Default
+  let route = '—';
+  let eta = '—';
+  let lastUpdated = now;
+  let routeSource = 'fallback';
+  try {
+    Logger.log(`=== FETCH PHASE: Sheet="${sheetName}", Entity="${entityID}"`);
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    // If Consignments or Containers, join with Orders for Ref ID, Sender/Receiver, etc.
+    let targetData = [];
+    let isJoined = false;
+    if (sheetName === 'Consignments') {
+      Logger.log(`Joining Consignments with Orders for ConsignmentID="${entityID}"`);
+      const consSheet = ss.getSheetByName('Consignments');
+      const ordersSheet = ss.getSheetByName('Orders');
+      if (consSheet && ordersSheet) {
+        const consHeaders = consSheet.getRange(1, 1, 1, consSheet.getLastColumn()).getValues()[0];
+        const ordersHeaders = ordersSheet.getRange(1, 1, 1, ordersSheet.getLastColumn()).getValues()[0];
+        const consH = consHeaders.map(h => key(h));
+        const ordersH = ordersHeaders.map(h => key(h));
+        
+        const consignmentCol = consH.indexOf(key('ConsignmentID'));
+        const ordersConsCol = ordersH.indexOf(key('ConsignmentID'));
+        const refCol = ordersH.indexOf(key('Ref ID'));
+        const senderCol = ordersH.indexOf(key('POL'));
+        const receiverCol = ordersH.indexOf(key('POD'));
+        const etaCol = ordersH.indexOf(key('ETA'));
+        const updatedCol = ordersH.indexOf(key('LastUpdated'));
+        
+        Logger.log(`Cons columns: ConsignmentID index=${consignmentCol}, Orders ConsignmentID=${ordersConsCol}, Ref ID=${refCol}, Sender=${senderCol}, Receiver=${receiverCol}`);
+        
+        const consData = consSheet.getDataRange().getValues();
+        const ordersData = ordersSheet.getDataRange().getValues();
+        
+        for (let c = 1; c < consData.length; c++) {
+          if (normText(consData[c][consignmentCol]) === normText(entityID)) {
+            const consRow = c + 1;
+            Logger.log(`Consignments match: Row ${consRow}`);
+            
+            // Find matching Order
+            for (let o = 1; o < ordersData.length; o++) {
+              if (normText(ordersData[o][ordersConsCol]) === normText(entityID)) {
+                isJoined = true;
+                const orderRow = o + 1;
+                refId = ordersData[o][refCol] || entityID;
+                orderId = ordersData[o][ordersH.indexOf(key('Order #'))] || 'N/A';
+                const sender = ordersData[o][senderCol] || '';
+                const receiver = ordersData[o][receiverCol] || '';
+                route = sender && receiver ? `${sender} to ${receiver}` : '—';
+                routeSource = 'Sender to Receiver (joined)';
+                
+                const etaVal = ordersData[o][etaCol];
+                eta = etaVal ? Utilities.formatDate(new Date(etaVal), tz, 'dd-MMM-yyyy') : '—';
+                
+                const updatedVal = ordersData[o][updatedCol];
+                lastUpdated = updatedVal ? Utilities.formatDate(new Date(updatedVal), tz, 'dd MMM yyyy, HH:mm') : now;
+                
+                Logger.log(`Joined Order match: Row ${orderRow}, RefID="${refId}", Route="${route}" (${routeSource}), ETA="${eta}"`);
+                break;
+              }
+            }
+            if (isJoined) break;
+          }
+        }
+        if (!isJoined) {
+          Logger.log(`No matching Order for Consignment "${entityID}"`);
+        }
+      }
+    } else if (sheetName === 'Containers') {
+      // Similar join logic for Containers -> Orders via Container Trip ID
+      Logger.log(`Joining Containers with Orders for ContainerTripID="${entityID}"`);
+      const containersSheet = ss.getSheetByName('Containers');
+      const ordersSheet = ss.getSheetByName('Orders');
+      if (containersSheet && ordersSheet) {
+        const contHeaders = containersSheet.getRange(1, 1, 1, containersSheet.getLastColumn()).getValues()[0];
+        const ordersHeaders = ordersSheet.getRange(1, 1, 1, ordersSheet.getLastColumn()).getValues()[0];
+        const contH = contHeaders.map(h => key(h));
+        const ordersH = ordersHeaders.map(h => key(h));
+        
+        const tripCol = contH.indexOf(key('ContainerTripID'));
+        const ordersTripCol = ordersH.indexOf(key('ContainerTripID'));
+        const refCol = ordersH.indexOf(key('Ref ID'));
+        const senderCol = ordersH.indexOf(key('POL'));
+        const receiverCol = ordersH.indexOf(key('POD'));
+        const etaCol = ordersH.indexOf(key('ETA'));
+        const updatedCol = ordersH.indexOf(key('LastUpdated'));
+        
+        const contData = containersSheet.getDataRange().getValues();
+        const ordersData = ordersSheet.getDataRange().getValues();
+        
+        for (let c = 1; c < contData.length; c++) {
+          if (normText(contData[c][tripCol]) === normText(entityID)) {
+            const contRow = c + 1;
+            Logger.log(`Containers match: Row ${contRow}`);
+            
+            // Find matching Order
+            for (let o = 1; o < ordersData.length; o++) {
+              if (normText(ordersData[o][ordersTripCol]) === normText(entityID)) {
+                isJoined = true;
+                const orderRow = o + 1;
+                refId = ordersData[o][refCol] || entityID;
+                orderId = ordersData[o][ordersH.indexOf(key('Order #'))] || 'N/A';
+                const sender = ordersData[o][senderCol] || '';
+                const receiver = ordersData[o][receiverCol] || '';
+                route = sender && receiver ? `${sender} to ${receiver}` : '—';
+                routeSource = 'Sender to Receiver (joined)';
+                
+                const etaVal = ordersData[o][etaCol];
+                eta = etaVal ? Utilities.formatDate(new Date(etaVal), tz, 'dd-MMM-yyyy') : '—';
+                
+                const updatedVal = ordersData[o][updatedCol];
+                lastUpdated = updatedVal ? Utilities.formatDate(new Date(updatedVal), tz, 'dd MMM yyyy, HH:mm') : now;
+                
+                Logger.log(`Joined Order match: Row ${orderRow}, RefID="${refId}", Route="${route}" (${routeSource}), ETA="${eta}"`);
+                break;
+              }
+            }
+            if (isJoined) break;
+          }
+        }
+        if (!isJoined) {
+          Logger.log(`No matching Order for Container "${entityID}"`);
+        }
+      }
+    } else {
+      // For Orders, fetch directly - FIXED: Use 'POL'/'POD' instead of 'Sender'/'Receiver'
+      const ordersSheet = ss.getSheetByName('Orders');
+      if (ordersSheet) {
+        const headers = ordersSheet.getRange(1, 1, 1, ordersSheet.getLastColumn()).getValues()[0];
+        const H = headers.map(h => key(h));
+        const refIdx = H.indexOf(key('Ref ID'));
+        const senderIdx = H.indexOf(key('POL'));  // FIXED: Changed from 'Sender'
+        const receiverIdx = H.indexOf(key('POD'));  // FIXED: Changed from 'Receiver'
+        const etaIdx = H.indexOf(key('ETA'));
+        const updatedIdx = H.indexOf(key('LastUpdated'));
+        
+        const data = ordersSheet.getDataRange().getValues();
+        for (let i = 1; i < data.length; i++) {
+          if (normText(data[i][refIdx]) === normText(entityID)) {
+            refId = data[i][refIdx] || entityID;
+            orderId = data[i][H.indexOf(key('Order #'))] || 'N/A';
+            const sender = data[i][senderIdx] || '';  // Now uses correct index
+            const receiver = data[i][receiverIdx] || '';  // Now uses correct index
+            route = sender && receiver ? `${sender} to ${receiver}` : '—';
+            routeSource = 'POL to POD';  // Updated label for clarity
+            
+            const etaVal = data[i][etaIdx];
+            eta = etaVal ? Utilities.formatDate(new Date(etaVal), tz, 'dd-MMM-yyyy') : '—';
+            
+            const updatedVal = data[i][updatedIdx];
+            lastUpdated = updatedVal ? Utilities.formatDate(new Date(updatedVal), tz, 'dd MMM yyyy, HH:mm') : now;
+            
+            Logger.log(`Orders match: Row ${i+1}, RefID="${refId}", Route="${route}" (${routeSource})`);
+            break;
+          }
+        }
+      }
+    }
+    
+    if (route === '—') {
+      Logger.log(`Route fallback to '—' - no data found`);
+    }
+  } catch (fetchErr) {
+    Logger.log(`Fetch error: ${fetchErr}`);
+  }
+  
+  Logger.log(`Final data: refId="${refId}", orderId="${orderId}", route="${route}" (${routeSource}), eta="${eta}", lastUpdated="${lastUpdated}"`);
+  
+  // Template - FIXED: Use refId instead of undefined shipmentData
+  const htmlTemplate = HtmlService.createTemplateFromFile('shipment_email');
+  const phase = getPhase(newStatus);
+
+  htmlTemplate.statusLabel = `Status: ${newStatus}`;
+  htmlTemplate.statusMsg = phase.msg;
+  htmlTemplate.statusTip = phase.tip;
+  htmlTemplate.refId = refId;  // Now from joined Order
+  htmlTemplate.orderId = orderId;  // Actual Order #
+  htmlTemplate.route = route;
+  htmlTemplate.eta = eta;
+  htmlTemplate.lastUpdated = lastUpdated;
+  htmlTemplate.trackLink = `https://ordertracking.royalgulfshipping.com/?ref=${encodeURIComponent(refId || '')}`;  // FIXED: Use refId
+
+  const htmlBody = htmlTemplate.evaluate().getContent();
+  const subject = `Status Change Alert: ${sheetName} - ${entityID} (Ref: ${refId})`;
+
+  try {
+    GmailApp.sendEmail(ADMIN_EMAIL, subject, 'Status change details.', { htmlBody });
+    Logger.log(`Admin email sent: Ref="${refId}", Route="${route}"`);
+  } catch (err) {
+    Logger.log('Admin send error: ' + err);
+  }
+}
+
+/***********************************************************************
+ * === Shipment Status Definitions ===
+ ***********************************************************************/
+const RGS_PHASES = [
+  { label: "Order Created", tip: "Your order has been created and is being processed.", msg: "Your order has been created successfully." },
+  { label: "Ready for Loading", tip: "Your shipment is being prepared at origin facility.", msg: "Your order is being prepared for loading." },
+  { label: "Loaded Into Container", tip: "Your cargo is loaded and sealed in container.", msg: "Your container is now ready to depart from origin." },
+  { label: "Shipment Processing", tip: "Shipment documentation is under verification.", msg: "Documentation is being processed for departure." },
+  { label: "Shipment In Transit", tip: "Your shipment is now in route to destination.", msg: "Your shipment is reaching to you soon!" },
+  { label: "Under Processing", tip: "Customs and clearance being arranged at destination.", msg: "Your shipment has reached destination and is under customs processing." },
+  { label: "Arrived at Sort Facility", tip: "Shipment arrived at destination port facility.", msg: "Shipment is at destination port facility and being sorted." },
+  { label: "Ready for Delivery", tip: "Cargo ready for dispatch.", msg: "Your cargo is ready for dispatch to your location." },
+  { label: "Shipment Delivered", tip: "Shipment successfully delivered.", msg: "Your shipment has been successfully delivered. Thank you for choosing RGSL." }
+];
+
+function getPhase(status) {
+  return RGS_PHASES.find(p => p.label === status) || {
+    label: "Status Update",
+    tip: "Your shipment status has been updated.",
+    msg: "Your shipment is progressing to the next stage."
+  };
+}
+
+/***********************************************************************
+ * CASCADE LOGIC (Updated: No logging for cascades to reduce duplication)
+ ***********************************************************************/
+function updateContainersAndOrders(consignmentID, newStatus, eta, now, user) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const containers = ss.getSheetByName('Containers');
+  const orders = ss.getSheetByName('Orders');
+  if (!containers || !orders) return;
+
+  const contData = containers.getDataRange().getValues();
+  const orderData = orders.getDataRange().getValues();
+
+  const consColC = getCol('ConsignmentID', containers);
+  const statColC = getCol('Status', containers);
+  const etaColC = getCol('ETA', containers);
+  const updColC = getCol('LastUpdated', containers);
+
+  const consColO = getCol('ConsignmentID', orders);
+  const statColO = getCol('Status', orders);
+  const etaColO = getCol('ETA', orders);
+  const updColO = getCol('LastUpdated', orders);
+
+  let cascadeCount = 0;
+
+  // Update Containers (no logging to avoid duplication)
+  for (let i = 1; i < contData.length; i++) {
+    if (normText(contData[i][consColC - 1]) === normText(consignmentID)) {
+      safeSetValue(containers, i + 1, statColC, newStatus);
+      containers.getRange(i + 1, etaColC).setValue(eta);
+      containers.getRange(i + 1, updColC).setValue(now);
+      cascadeCount++;
+    }
+  }
+
+  // Update Orders (no logging to avoid duplication)
+  for (let j = 1; j < orderData.length; j++) {
+    if (normText(orderData[j][consColO - 1]) === normText(consignmentID)) {
+      safeSetValue(orders, j + 1, statColO, newStatus);
+      orders.getRange(j + 1, etaColO).setValue(eta);
+      orders.getRange(j + 1, updColO).setValue(now);
+      cascadeCount++;
+    }
+  }
+
+  if (cascadeCount > 0) {
+    Logger.log(`Cascaded ${cascadeCount} updates for Consignment ${consignmentID}`);
+  }
+}
+
+function updateOrdersByContainer(containerTripID, newStatus, eta, now, user) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const orders = ss.getSheetByName('Orders');
+  if (!orders) return;
+  const data = orders.getDataRange().getValues();
+
+  const tripCol = getCol('ContainerTripID', orders);
+  const statCol = getCol('Status', orders);
+  const etaCol = getCol('ETA', orders);
+  const updCol = getCol('LastUpdated', orders);
+
+  let cascadeCount = 0;
+
+  for (let i = 1; i < data.length; i++) {
+    if (normText(data[i][tripCol - 1]) === normText(containerTripID)) {
+      safeSetValue(orders, i + 1, statCol, newStatus);
+      orders.getRange(i + 1, etaCol).setValue(eta);
+      orders.getRange(i + 1, updCol).setValue(now);
+      cascadeCount++;
+    }
+  }
+
+  if (cascadeCount > 0) {
+    Logger.log(`Cascaded ${cascadeCount} updates for Container ${containerTripID}`);
+  }
+}
+
+/***********************************************************************
+ * EMAIL LOGIC
+ ***********************************************************************/
+function emailOrdersForConsignment(consignmentID) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const orders = ss.getSheetByName('Orders');
+  if (!orders) return;
+  const data = orders.getDataRange().getValues();
+  const consCol = getCol('ConsignmentID', orders);
+  const statCol = getCol('Status', orders);
+
+  for (let r = 1; r < data.length; r++) {  // 0-indexed
+    const rowCons = data[r][consCol - 1];
+    const rowStatus = data[r][statCol - 1];
+    if (normText(rowCons) === normText(consignmentID) && key(rowStatus) === key('Ready for Loading')) {
+      emailOrderRowIfNotAlreadySent(r + 1);  // 1-indexed row
+    }
+  }
+}
+
+function emailOrdersForContainer(containerTripID) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const orders = ss.getSheetByName('Orders');
+  if (!orders) return;
+  const data = orders.getDataRange().getValues();
+  const tripCol = getCol('ContainerTripID', orders);
+  const statCol = getCol('Status', orders);
+
+  for (let r = 1; r < data.length; r++) {  // 0-indexed
+    const rowTrip = data[r][tripCol - 1];
+    const rowStatus = data[r][statCol - 1];
+    if (normText(rowTrip) === normText(containerTripID) && key(rowStatus) === key('Ready for Loading')) {
+      emailOrderRowIfNotAlreadySent(r + 1);  // 1-indexed row
+    }
+  }
+}
+
+function emailOrderRowIfNotAlreadySent(row) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const orders = ss.getSheetByName('Orders');
+  if (!orders || row < 2) return;
+  
+  const headers = orders.getRange(1, 1, 1, orders.getLastColumn()).getValues()[0];
+  const rowVals = orders.getRange(row, 1, 1, orders.getLastColumn()).getValues()[0];
+  const H = headers.map(h => key(h));
+  const tz = ss.getSpreadsheetTimeZone() || 'GMT';
+
+  function v(label) {
+    const i = H.indexOf(key(label));
+    let val = i > -1 ? rowVals[i] : '';
+    // FIXED: Normalize null/undefined to empty string
+    if (val == null) val = '';
+    return val;
+  }
+
+  let refID = v('Ref ID');
+  
+  // Auto-generate Ref ID if missing
+  if (!refID) {
+    const colRef = H.indexOf(key('Ref ID')) + 1;
+    if (colRef > 0) {
+      refID = 'RGSL-ORD-' + Math.random().toString(36).substring(2, 8).toUpperCase();
+      orders.getRange(row, colRef).setValue(refID);
+      Logger.log(`Auto-generated Ref ID: ${refID} for row ${row} (email trigger)`);
+    }
+  }
+  
+  const sender = v('Sender');
+  const receiver = v('Receiver');
+  const status = v('Status');
+  if (key(status) !== key('Ready for Loading')) return;
+
+  // Guarded ETA formatting
+  let etaDate = v('ETA');
+  if (etaDate && !(etaDate instanceof Date)) etaDate = new Date(etaDate);
+  if (!etaDate || isNaN(etaDate.getTime())) etaDate = new Date();
+  let eta;
+  try {
+    eta = Utilities.formatDate(etaDate, tz, 'dd-MMM-yyyy');
+  } catch (err) {
+    Logger.log('ETA format error: ' + err);
+    eta = '—';
+  }
+
+  const orderData = {
+    RefID: refID || '—',
+    OrderNumber: v('Order #') || 'N/A',
+    BL: v('BL') || 'N/A',
+    Status: status,
+    ETA: eta,
+    Sender: sender,  // NEW: Pass for route
+    Receiver: receiver  // NEW: Pass for route
+  };
+
+  const senderEmails = getClientEmailsByName(sender);
+  const receiverEmails = getClientEmailsByName(receiver);
+
+  const senderCol = findColByKeyLike(['emailsentsender'], headers);
+  const rcvrCol = findColByKeyLike(['emailsentreceiver'], headers);
+  const ts = Utilities.formatDate(new Date(), tz, 'dd-MMM-yyyy HH:mm');
+
+  const subjectLine = `Royal Gulf Shipping - Order Confirmation (Order #${orderData.OrderNumber} | Ref ${orderData.RefID})`;
+
+  // Debug log
+  Logger.log(`Order ${refID}: Status=${status}, Sender emails=${senderEmails.length}, Receiver emails=${receiverEmails.length}`);
+
+  // Sender
+  const currSenderTick = senderCol ? orders.getRange(row, senderCol).getValue().toString() : '';
+  if (senderEmails.length > 0 && !/^✅/.test(currSenderTick)) {
+    try {
+      GmailApp.sendEmail({
+        to: senderEmails.join(','),
+        cc: 'info@royalgulfshipping.com',
+        subject: subjectLine,
+        htmlBody: buildOrderEmailHTML(sender, orderData),
+        name: 'Royal Gulf Shipping - Order Confirmation'
+      });
+      if (senderCol) orders.getRange(row, senderCol).setValue('✅ ' + ts);
+      Logger.log(`Email sent to Sender for Order ${refID}`);
+    } catch (err) {
+      Logger.log('Sender email error: ' + err);
+    }
+  }
+
+  // Receiver
+  const currRcvrTick = rcvrCol ? orders.getRange(row, rcvrCol).getValue().toString() : '';
+  if (receiverEmails.length > 0 && !/^✅/.test(currRcvrTick)) {
+    try {
+      GmailApp.sendEmail({
+        to: receiverEmails.join(','),
+        cc: 'info@royalgulfshipping.com',
+        subject: subjectLine,
+        htmlBody: buildOrderEmailHTML(receiver, orderData),
+        name: 'Royal Gulf Shipping - Order Confirmation'
+      });
+      if (rcvrCol) orders.getRange(row, rcvrCol).setValue('✅ ' + ts);
+      Logger.log(`Email sent to Receiver for Order ${refID}`);
+    } catch (err) {
+      Logger.log('Receiver email error: ' + err);
+    }
+  }
+}
+
+/***********************************************************************
+ * CLIENT MASTER LOOKUP
+ ***********************************************************************/
+function getClientEmailsByName(name) {
+  if (!name) return [];
+  const url = 'https://docs.google.com/spreadsheets/d/1zqjRpqlnnZdY315fK8FVnwlRmG7FHSz78cWhzz-rQiU/edit';
+  try {
+    const file = SpreadsheetApp.openByUrl(url);
+    const sh = file.getSheetByName('Client Master');
+    if (!sh) {
+      Logger.log('Client Master sheet missing');
+      return [];
+    }
+
+    const data = sh.getDataRange().getValues();
+    const target = normText(name);
+    for (let i = 1; i < data.length; i++) {
+      const company = normText(data[i][1] || '');
+      const notify = (data[i][4] || '').toString().trim().toUpperCase();
+      if (company === target && notify === 'Y') {
+        const main = (data[i][2] || '').toString().trim();
+        const extra = (data[i][3] || '').toString().trim();
+        const list = [];
+        if (main) list.push(main);
+        if (extra) list.push(...extra.split(/[,;]+/).map(e => e.trim()).filter(Boolean));
+        return list;
+      }
+    }
+    Logger.log(`No emails found for client: ${name}`);
+  } catch (err) {
+    Logger.log(`Client Master access error for ${name}: ${err}`);
+  }
+  return [];
+}
+
+/***********************************************************************
+ * AUTO REF ID
+ ***********************************************************************/
+function autoGenerateOrderRefID(e) {
+  if (!e) return;
+  const sh = e.source.getActiveSheet();
+  if (key(sh.getName()) !== key('Orders')) return;
+  const row = e.range.getRow();
+  if (row === 1) return;
+
+  const colRef = getCol('Ref ID', sh);
+  const currentRef = sh.getRange(row, colRef).getValue();
+  if (currentRef) return;  // Already set
+
+  const newRef = 'RGSL-ORD-' + Math.random().toString(36).substring(2, 8).toUpperCase();
+  sh.getRange(row, colRef).setValue(newRef);
+  Logger.log(`Auto-generated Ref ID: ${newRef} for row ${row}`);
+}
+
+/***********************************************************************
+ * HELPERS
+ ***********************************************************************/
+function key(v) { return normText(v).replace(/[^a-z0-9]/g, ''); }
+function normText(v) { return v ? v.toString().replace(/\u00A0/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase() : ''; }
+
+function getCol(name, sh) {
+  const want = key(name);
+  const headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  for (let i = 0; i < headers.length; i++) {
+    if (key(headers[i]) === want) return i + 1;
+  }
+  Logger.log(`Header not found: ${name} in sheet ${sh.getName()}`);
+  return -1;  // FIXED: Return -1 instead of throw for graceful fail
+}
+
+function findColByKeyLike(possibleKeys, headers) {
+  const H = headers.map(h => key(h));
+  for (let i = 0; i < H.length; i++) {
+    if (possibleKeys.some(k => H[i].indexOf(k) !== -1)) return i + 1;
+  }
+  return null;
+}
+
+function safeSetValue(sh, row, col, value) {
+  const cell = sh.getRange(row, col);
+  const dv = cell.getDataValidation();
+  try {
+    if (dv) cell.setDataValidation(null);
+    cell.setValue(value);
+  } finally {
+    if (dv) cell.setDataValidation(dv);
+  }
+}
+
+/***********************************************************************
+ * doGet - ENHANCED: Better log parsing, error handling
+ ***********************************************************************/
+function doGet(e) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const ref = e.parameter.ref ? e.parameter.ref.trim() : ''; // get ?ref=XYZ123
+
+    // === Orders ===
+    const ordersSheet = ss.getSheetByName('Orders');
+    if (!ordersSheet) throw new Error('Orders sheet missing');
+    const ordersData = ordersSheet.getDataRange().getValues();
+    const ordersHeaders = ordersData[0];
+    let orders = ordersData.slice(1)
+      .filter(row => row[0] || row[1])  // Ref ID or Order # not empty
+      .map(row => {
+        const obj = {};
+        ordersHeaders.forEach((header, i) => obj[header] = row[i]);
+        return obj;
+      });
+
+    // ✅ Filter if ref parameter provided
+    if (ref) {
+      orders = orders.filter(r =>
+        r['Ref ID'] === ref ||
+        r['ConsignmentID'] === ref ||
+        r['ContainerTripID'] === ref
+      );
+    }
+
+    // === Logs ===
+    const logsSheet = ss.getSheetByName('Status Logs');
+    let logs = [];
+    if (logsSheet && logsSheet.getLastRow() > 1) {
+      const logsData = logsSheet.getDataRange().getValues();
+      const logsHeaders = logsData[0];
+      logs = logsData.slice(1)
+        .filter(row => row[0]) // Timestamp not empty
+        .map(row => {
+          const obj = {};
+          logsHeaders.forEach((header, i) => {
+            let val = row[i];
+            if (header === 'Timestamp' && val instanceof Date) {
+              val = val.toISOString();
+            } else if (header === 'Timestamp' && typeof val === 'string' && !val.includes('T')) {
+              val = new Date(val).toISOString();
+            }
+            obj[header] = val;
+          });
+          return obj;
+        });
+
+      // ✅ Filter logs if ref given — match related entities
+      if (ref) {
+        const orderIds = [...new Set(orders.map(o => o['Ref ID']).filter(Boolean))];
+        const consignmentIds = [...new Set(orders.map(o => o['ConsignmentID']).filter(Boolean))];
+        const containerIds = [...new Set(orders.map(o => o['ContainerTripID']).filter(Boolean))];
+
+        logs = logs.filter(log => {
+          const entity = log['Entity ID'];
+          const sheet = log['Sheet'];
+          return (
+            (sheet === 'Orders' && orderIds.includes(entity)) ||
+            (sheet === 'Consignments' && consignmentIds.includes(entity)) ||
+            (sheet === 'Containers' && containerIds.includes(entity))
+          );
+        });
+      }
+    }
+
+    return ContentService
+      .createTextOutput(JSON.stringify({ orders, logs }))
+      .setMimeType(ContentService.MimeType.JSON);
+
+  } catch (err) {
+    Logger.log('doGet error: ' + err);
+    return ContentService
+      .createTextOutput(JSON.stringify({ error: err.toString(), orders: [], logs: [] }))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+function doPost(e) {
+  try {
+    // Handle manual run in Editor (e undefined)
+    // if (!e || !e.postData) {
+    //   console.log('Manual run detected—using sample data for testing');
+    //   return testDoPostWithSample();  // Calls helper with sample payload
+    // }
+
+    const data = JSON.parse(e.postData.contents || '{}');
+    console.log('doPost received payload:', data);
+    if (data.action === 'saveNotification') {
+      return handleNotificationSave(data);
+    } else {
+      const errorResponse = { success: false, message: 'Unknown action' };
+      console.log('Unknown action:', data.action);
+      return ContentService
+        .createTextOutput(JSON.stringify(errorResponse))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+  } catch (err) {
+    console.error('doPost error: ' + err.toString());
+    const errorResponse = { success: false, error: err.toString() };
+    return ContentService
+      .createTextOutput(JSON.stringify(errorResponse))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+/**
+ * Helper for manual testing in Editor—simulates POST event with sample data.
+ * Run this directly if needed, or let doPost call it.
+ */
+// function testDoPostWithSample() {
+//   const sampleData = {
+//     action: 'saveNotification',
+//     email: 'support2@royalgulfshipping.com',  // Change to your test email if needed
+//     referenceId: 'RGSL-ORD-TEST123',
+//     orderId: 'TEST456',
+//     route: 'DUBAI ➜ KARACHI',
+//     eta: '13 Nov 2025',
+//     timestamp: new Date().toISOString()
+//   };
+//   console.log('Using sample data for manual test:', sampleData);
+//   return handleNotificationSave(sampleData);
+// }
+
+/**
+ * Save notification details to sheet + send confirmation email.
+ * @param {object} data - Payload from form (email, referenceId, etc.)
+ * @return {ContentService} JSON response.
+ */
+function handleNotificationSave(data) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName('Notifications');
+  if (!sheet) {
+    sheet = ss.insertSheet('Notifications');
+    sheet.getRange(1, 1, 1, 6)
+      .setValues([['Timestamp', 'Reference ID', 'Order ID', 'Route', 'ETA', 'Email']]);
+    sheet.getRange(1, 1, 1, 6).setFontWeight('bold');
+  }
+
+  // Validate email
+  if (!data || !data.email || !data.email.includes('@')) {
+    console.log('Invalid/missing data:', data ? data.email : 'No data');
+    return ContentService
+      .createTextOutput(JSON.stringify({ success: false, message: 'Invalid email address' }))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+
+  // Save to Google Sheet (always succeeds)
+  sheet.appendRow([
+    new Date().toISOString(),
+    data.referenceId || '',
+    data.orderId || '',
+    data.route || '',
+    data.eta || '',
+    data.email
+  ]);
+  console.log('Saved to sheet for email: ' + data.email);
+
+  // Send confirmation email with error handling
+  let emailSuccess = true;
+  let emailMessage = 'Email sent successfully';
+  try {
+    sendShipmentEmail(data.email, {
+      statusLabel: 'Subscription Confirmed',
+      statusMsg: 'You have successfully subscribed to receive shipment updates from Royal Gulf Shipping.',
+      refId: data.referenceId || '—',
+      orderId: data.orderId || '—',
+      route: data.route || '—',
+      eta: data.eta || '—',
+      lastUpdated: Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'dd MMM yyyy, hh:mm a')
+    });
+    console.log('Email sent to: ' + data.email);
+  } catch (emailError) {
+    emailSuccess = false;
+    emailMessage = 'Email failed: ' + emailError.toString();
+    console.error('Email error details: ' + emailError.toString());
+  }
+
+  const response = {
+    success: true,
+    message: `Notification saved. ${emailMessage}`,
+    emailSent: emailSuccess
+  };
+  console.log('Response: ' + JSON.stringify(response));
+
+  return ContentService
+    .createTextOutput(JSON.stringify(response))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+/**
+ * Send shipment status email using HTML template.
+ * @param {string} email - Recipient email.
+ * @param {object} shipmentData - Details (statusLabel, refId, etc.).
+ */
+function sendShipmentEmail(email, shipmentData) {
+  if (!email) {
+    console.log('sendShipmentEmail skipped: No email provided');
+    return;
+  }
+
+  try {
+    // Load your created template file
+    const htmlTemplate = HtmlService.createTemplateFromFile('order_confirmation_template');
+
+    // Inject dynamic data into template
+    htmlTemplate.statusLabel = shipmentData.statusLabel || 'Shipment Update';
+    htmlTemplate.statusMsg = shipmentData.statusMsg || 'Your shipment has been updated.';
+    htmlTemplate.refId = shipmentData.refId || '—';
+    htmlTemplate.orderId = shipmentData.orderId || '—';
+    htmlTemplate.route = shipmentData.route || '—';
+    htmlTemplate.eta = shipmentData.eta || '—';
+    htmlTemplate.lastUpdated = shipmentData.lastUpdated || 
+      Utilities.formatDate(new Date(), SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone(), 'dd MMM yyyy, HH:mm');
+    htmlTemplate.trackLink = `https://ordertracking.royalgulfshipping.com/?ref=${encodeURIComponent(shipmentData.refId || '')}`;
+
+    const htmlBody = htmlTemplate.evaluate().getContent();
+    
+    // Basic validation: Catch template rendering issues
+    if (!htmlBody || htmlBody.length < 100) {
+      throw new Error('Template evaluation failed - check order_confirmation_template.html syntax');
+    }
+
+    console.log('Template loaded successfully for ' + email);  // Debug log
+
+    // Complete subject line
+    const subject = `Royal Gulf Shipping – ${shipmentData.statusLabel} (Ref: ${shipmentData.refId || 'N/A'})`;
+
+    // Quota check (using GmailApp for consistency)
+    const remainingQuota = MailApp.getRemainingDailyQuota();  // FIXED: Use GmailApp
+    if (remainingQuota < 5) {
+      console.log(`Low email quota (${remainingQuota} remaining) - skipping send to ${email}`);
+      return;
+    }
+
+    // Send with HTML body (links clickable)
+    GmailApp.sendEmail(email, subject, 'Shipment update from Royal Gulf Shipping.', { htmlBody });
+    console.log(`Shipment email sent to ${email} for ${shipmentData.statusLabel} (Ref: ${shipmentData.refId || 'N/A'})`);
+  } catch (err) {
+    console.error(`sendShipmentEmail error for ${email}: ${err.toString()}`);
+  }
+}
+
+function calculateETA(statusRaw, baseDate) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const cfgSheet = ss.getSheetByName('ETA Config');
+    if (!cfgSheet) {
+      Logger.log('ETA Config sheet missing; defaulting to 0 days');
+      return baseDate;
+    }
+    const cfg = cfgSheet.getDataRange().getValues();
+    const map = {};
+    for (let i = 1; i < cfg.length; i++) {
+      map[key(cfg[i][0])] = Number(cfg[i][1]) || 0;
+    }
+    const days = map[key(statusRaw)] || 0;
+    return key(statusRaw) === key('Shipment Delivered')
+      ? baseDate
+      : new Date(baseDate.getTime() + days * 86400000);
+  } catch (err) {
+    Logger.log('ETA calc error: ' + err);
+    return baseDate;
+  }
+}
+
+function buildOrderEmailHTML(name = 'Customer', order = {}) {
+  // FIXED: Default parameters to handle direct function calls/tests gracefully
+  try {
+    const html = HtmlService.createTemplateFromFile('shipment_email');
+    html.ClientName = name || 'Customer';
+    html.RefID = order.RefID || '—';
+    html.OrderNumber = order.OrderNumber || 'N/A';
+    html.BL = order.BL || 'N/A';
+    html.Status = order.Status || 'Ready for Loading';
+    html.ETA = order.ETA || '—';
+    html.route = order.Sender && order.Receiver ? `${order.Sender} to ${order.Receiver}` : '—';  // Derived route
+    html.trackLink = `https://ordertracking.royalgulfshipping.com/?ref=${encodeURIComponent(shipmentData.refId || '')}`;
+    return html.evaluate().getContent();
+  } catch (err) {
+    Logger.log(`Order email template error: ${err}`);
+    return '<p>Order confirmation details unavailable. Please contact support.</p>';  // Fallback
+  }
+}

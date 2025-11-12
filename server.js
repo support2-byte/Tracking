@@ -30,6 +30,8 @@ app.use((req, res, next) => {
 app.options("*", (req, res) => {
   res.sendStatus(204); // No Content
 });
+https://tracking-2yq6.onrender.com/api/getShipment?r
+
 
 // POST /api/verify-recaptcha
 app.post("/api/verify-recaptcha", async (req, res) => {
@@ -91,10 +93,8 @@ const buildRgsUrl = (params = {}) => {
   Object.keys(params).forEach(k => url.searchParams.set(k, params[k]));
   return url.toString();
 };
-
-
-// Proxy endpoint for notifications
 app.post("/api/notify", async (req, res) => {
+  console.log('Incoming payload:', req.body);  // Logs your payload, e.g., {action: 'saveNotification', email: 'support2@royalgulfshipping.com', ...}
   try {
     const body = req.body;
     const response = await fetch(process.env.RGS_ENDPOINT, {
@@ -103,14 +103,13 @@ app.post("/api/notify", async (req, res) => {
       body: JSON.stringify(body),
     });
     const result = await response.json();
-    res.json(result);
+    console.log('GAS Response:', result);  // E.g., {success: true, emailSent: true}
+    res.json(result);  // Returns to frontend
   } catch (err) {
-    console.error("Error sending notification:", err);
-    res.status(500).json({ error: "Failed to send notification" });
+    console.error("Proxy error:", err);
+    res.status(500).json({ success: false, error: "Failed to notify" });
   }
 });
-
-
 // ------------------ Health check ------------------
 app.get("/", (req, res) => {
   res.send("Shipment Tracker Backend is running!");

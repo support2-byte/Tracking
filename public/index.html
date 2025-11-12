@@ -1440,10 +1440,10 @@
 </head>
 
 <body>
-<div id="loader" style="display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh;">
+<!-- <div id="loader" style="display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh;">
   <h2>Verifying...</h2>
   <p>Please wait while we verify you are human.</p>
-</div>
+</div> -->
 <!-- <div class="g-recaptcha" data-sitekey="6Lf3iwUsAAAAAE7483DEwqV2gbxBZIqMi9EP06Kd"></div> -->
 
 <main id="content" style="display:none;">
@@ -1647,9 +1647,9 @@
 <script>
   // ========== Configuration ==========
   const PUBLIC_KEY     = 'FRONTEND_KEY_ABC123'; // same as in .env
-  const PROXY_ENDPOINT = '/api/getShipment';
+  const PROXY_ENDPOINT = 'https://tracking-2yq6.onrender.com/api/getShipment';
 
-    const RGS_NOTIFY_ENDPOINT = "/api/notify";  
+    const RGS_NOTIFY_ENDPOINT = "https://tracking-2yq6.onrender.com/api/notify";  
         const rgsEl = (s, p = document) => p.querySelector(s);
         const rgsFmtDate = d => new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
 
@@ -1776,7 +1776,7 @@
             if (searchBox) searchBox.style.display = 'none';
 
             try {
-         const response = await fetch(`${PROXY_ENDPOINT}?ref=${encodeURIComponent(ref)}&key=${encodeURIComponent(PUBLIC_KEY)}`);
+                 const response = await fetch(`https://tracking-2yq6.onrender.com/api/getShipment?ref=${encodeURIComponent(ref)}&key=${encodeURIComponent(PUBLIC_KEY)}`);
                 if (!response.ok) {
                     throw new Error(`HTTP error! status: ${response.status}`);
                 }
