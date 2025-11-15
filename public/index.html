@@ -1577,7 +1577,6 @@ ease;
         }
     </style>
 </head>
-
 <body>
 <div id="loader">
   <h2>Verifying...</h2>
@@ -1717,6 +1716,7 @@ ease;
         <div class="steps" id="steps-h"></div>
       </div>
       <div id="statusMsg" class="status-message"></div>
+      <div id="reverseNote" class="reverse-note" style="display:none; background: #fff3cd; border: 1px solid #ffeaa7; color: #856404; padding: 10px; border-radius: 5px; margin: 10px 0; text-align: center;"></div>
       <div id="noteBox" class="note-box"></div>
 
       <div class="actions" id="actions" style="display:none;">
@@ -2142,6 +2142,16 @@ ease;
       const etaLabel = isSpecialStatus ? rgsCurrentStatus : "Eta";
       const bottomLabel = isSpecialStatus ? rgsCurrentStatus : "Expected Arrival";
 
+      // Detect reverse: if max ever > current
+      const allStatuses = RGS_PHASES.map(p => p.label);
+      const activeIndex = allStatuses.findIndex(x => x === rgsCurrentStatus);
+      let maxEverIndex = 0;
+      history.forEach(item => {
+        const idx = allStatuses.findIndex(x => x === item.Status);
+        if (idx > maxEverIndex) maxEverIndex = idx;
+      });
+      const isReverse = maxEverIndex > activeIndex;
+
       // UI Updates (with null guards)
       const route = rgsEl('#route');
       if (route) route.style.display = 'flex';
@@ -2187,6 +2197,17 @@ ease;
         noteBox.classList.add('visible');
       }
 
+      // NEW: Show reverse tagline if detected
+      const reverseNote = rgsEl('#reverseNote');
+      if (reverseNote) {
+        if (isReverse) {
+          reverseNote.textContent = 'Due to an issue, we had to reverse the status. We apologize for any inconvenience.';
+          reverseNote.style.display = 'block';
+        } else {
+          reverseNote.style.display = 'none';
+        }
+      }
+
       rgsRenderVerticalTimeline(history, bottomLabel, eta);
 
     } catch (err) {
@@ -2198,7 +2219,7 @@ ease;
     }
   }
 
-  // ORIGINAL VERTICAL TIMELINE FUNCTION - with active step aur uske pehle ke sab steps
+  // FIXED VERTICAL TIMELINE: Show up to max ever reached status (handles reverses by showing visited history), active on latest status
   function rgsRenderVerticalTimeline(history, bottomLabel, eta) {
     const panel = rgsEl('#timelinePanel');
     if (!panel) return;
@@ -2215,47 +2236,54 @@ ease;
       }
     });
 
-    // Timeline track line create karo
+    // Map latest time per status
+    const statusTimes = {};
+    uniqueHistory.forEach(item => {
+      statusTimes[item.Status] = item.LastUpdated;
+    });
+
+    // All possible statuses in sequence order
+    const allStatuses = RGS_PHASES.map(p => p.label);
+
+    // Current active index
+    const activeIndex = allStatuses.findIndex(x => x === rgsCurrentStatus);
+
+    // Max ever reached index (for showing full visited progress, even on reverse)
+    let maxEverIndex = 0;
+    uniqueHistory.forEach(item => {
+      const idx = allStatuses.findIndex(x => x === item.Status);
+      if (idx > maxEverIndex) maxEverIndex = idx;
+    });
+
+    // Steps to show: up to max ever (includes all visited, even if current is earlier)
+    const stepsToShow = allStatuses.slice(0, maxEverIndex + 1);
     const itemSpacing = 40;
     const solidLine = document.createElement('div');
     solidLine.className = 'track-line';
-
-    // Sabse pehle, active step ka index find karo
-    const currentStatus = uniqueHistory[uniqueHistory.length - 1] ? uniqueHistory[uniqueHistory.length - 1].Status : '';
-    const allStatuses = [...new Set([...RGS_PHASES.map(p => p.label), ...uniqueHistory.map(h => h.Status)])];  // Include customs
-    allStatuses.sort((a, b) => {
-      const idxA = RGS_PHASES.findIndex(p => p.label === a);
-      const idxB = RGS_PHASES.findIndex(p => p.label === b);
-      return (idxA === -1 ? Infinity : idxA) - (idxB === -1 ? Infinity : idxB);  // Standard first, customs last
-    });
-    const activeIndex = allStatuses.findIndex(x => x === currentStatus);
-
-    // Sirf active step aur uske pehle ke steps show karo
-    const stepsToShow = allStatuses.slice(0, activeIndex + 1);
-
     solidLine.style.height = `${stepsToShow.length * itemSpacing}px`;
     panel.appendChild(solidLine);
 
-    // Har step ke liye timeline item create karo
+    // Render each step
     stepsToShow.forEach((status, i) => {
       const row = document.createElement('div');
       row.className = 'item';
 
-      // Last item (active step) ko active banayo
-      if (i === stepsToShow.length - 1) {
+      // Default to done if within max ever
+      row.classList.add('done');
+
+      // Active if current status (overrides done for styling)
+      if (status === rgsCurrentStatus) {
         row.classList.add('active');
-      } else {
-        row.classList.add('done');
       }
 
-      // Step ke liye latest time find karo (from uniqueHistory)
-      const statusTime = uniqueHistory.find(h => h.Status === status);
+      // Time text
       let timeText = '';
-      if (statusTime) {
-        timeText = rgsFmtTime(statusTime.LastUpdated);
-      } else if (i < stepsToShow.length - 1) {  // Past step, no log
+      if (statusTimes[status]) {
+        timeText = rgsFmtTime(statusTimes[status]);
+      } else if (i < activeIndex) {
         timeText = 'Not logged yet';
-      }  // Active blank if no time (rare)
+      } // For future/visited later: blank or time if visited
+
       row.innerHTML = `
         <div class='dot'></div>
         <div class='content'>
