@@ -2219,95 +2219,56 @@ ease;
     }
   }
 
-  // FIXED VERTICAL TIMELINE: Show up to max ever reached status (handles reverses by showing visited history), active on latest status
-  function rgsRenderVerticalTimeline(history, bottomLabel, eta) {
-    const panel = rgsEl('#timelinePanel');
-    if (!panel) return;
-    panel.innerHTML = '';
-
-    // Deduplicate history: Sort desc by LastUpdated, then unique by Status (latest first)
-    const sortedHistory = [...history].sort((a, b) => new Date(b.LastUpdated) - new Date(a.LastUpdated));
-    const uniqueHistory = [];
-    const seen = new Set();
-    sortedHistory.forEach(entry => {
-      if (!seen.has(entry.Status)) {
-        seen.add(entry.Status);
-        uniqueHistory.push(entry);
-      }
-    });
-
-    // Map latest time per status
-    const statusTimes = {};
-    uniqueHistory.forEach(item => {
-      statusTimes[item.Status] = item.LastUpdated;
-    });
-
-    // All possible statuses in sequence order
-    const allStatuses = RGS_PHASES.map(p => p.label);
-
-    // Current active index
-    const activeIndex = allStatuses.findIndex(x => x === rgsCurrentStatus);
-
-    // Max ever reached index (for showing full visited progress, even on reverse)
-    let maxEverIndex = 0;
-    uniqueHistory.forEach(item => {
-      const idx = allStatuses.findIndex(x => x === item.Status);
-      if (idx > maxEverIndex) maxEverIndex = idx;
-    });
-
-    // Steps to show: up to max ever (includes all visited, even if current is earlier)
-    const stepsToShow = allStatuses.slice(0, maxEverIndex + 1);
-    const itemSpacing = 40;
-    const solidLine = document.createElement('div');
-    solidLine.className = 'track-line';
-    solidLine.style.height = `${stepsToShow.length * itemSpacing}px`;
-    panel.appendChild(solidLine);
-
-    // Render each step
-    stepsToShow.forEach((status, i) => {
-      const row = document.createElement('div');
-      row.className = 'item';
-
-      // Default to done if within max ever
-      row.classList.add('done');
-
-      // Active if current status (overrides done for styling)
-      if (status === rgsCurrentStatus) {
-        row.classList.add('active');
-      }
-
-      // Time text
-      let timeText = '';
-      if (statusTimes[status]) {
-        timeText = rgsFmtTime(statusTimes[status]);
-      } else if (i < activeIndex) {
-        timeText = 'Not logged yet';
-      } // For future/visited later: blank or time if visited
-
-      row.innerHTML = `
-        <div class='dot'></div>
-        <div class='content'>
-          <p class='status'>${status}</p>
-          <p class='time'>${timeText}</p>
-        </div>
-      `;
-      panel.appendChild(row);
-    });
-
-    // ETA box add karo - with special handling for status
-    const etaBox = document.createElement('div');
-    etaBox.style.textAlign = 'center';
-    etaBox.style.marginTop = '18px';
-    etaBox.innerHTML = `
-      <span class='eta'>${bottomLabel}: ${eta}</span>
-      <p style='margin-top:10px;font-size:13px;color:var(--rg-subtext); font-family: "Inter", Arial, sans-serif;'>
-        Are you looking to schedule your delivery? <br> 
-        Please call us at <strong style='color:var(--rg-orange);'>+971555658321</strong> and book your delivery with best competitive prices.
-      </p>
-    `;
-    panel.appendChild(etaBox);
-  }
-
+  function rgsRenderVerticalTimeline(history, eta) {
+            const panel = rgsEl('#timelinePanel');
+            panel.innerHTML = '';
+            // Timeline track line create karo
+            const itemSpacing = 45;
+            const solidLine = document.createElement('div');
+            solidLine.className = 'track-line';
+            // Sabse pehle, active step ka index find karo
+            const currentStatus = history[history.length - 1].Status;
+            const allStatuses = RGS_PHASES.map(p => p.label);
+            const activeIndex = allStatuses.findIndex(x => x === currentStatus);
+            // Sirf active step aur uske pehle ke steps show karo
+            const stepsToShow = allStatuses.slice(0, activeIndex + 1);
+            solidLine.style.height = `${stepsToShow.length * itemSpacing}px`;
+            panel.appendChild(solidLine);
+            // Har step ke liye timeline item create karo
+            stepsToShow.forEach((status, i) => {
+                const row = document.createElement('div');
+                row.className = 'item';
+                // Last item (active step) ko active banayo
+                if (i === stepsToShow.length - 1) {
+                    row.classList.add('active');
+                } else {
+                    row.classList.add('done');
+                }
+                // Step ke liye time find karo (agar history mein hai)
+                const statusTime = history.find(h => h.Status === status);
+                const timeText = statusTime ? rgsFmtTime(statusTime.LastUpdated) : '';
+                row.innerHTML = `
+                    <div class='dot'></div>
+                    <div class='content'>
+                        <p class='status'>${status}</p>
+                        <p class='time'>${timeText}</p>
+                    </div>
+                `;
+                panel.appendChild(row);
+            });
+            // ETA box add karo
+            const etaBox = document.createElement('div');
+            etaBox.style.textAlign = 'center';
+            etaBox.style.marginTop = '18px';
+            etaBox.innerHTML = `
+                <span class='eta'>Expected Arrival: ${eta}</span>
+                <p style='margin-top:10px;font-size:13px;color:var(--rg-subtext); font-family: "Inter", Arial, sans-serif;'>
+                    Are you looking to schedule your delivery? <br>
+                    Please call us at <strong style='color:var(--rg-orange);'>+971555658321</strong> and book your delivery with best competitive prices.
+                </p>
+            `;
+            panel.appendChild(etaBox);
+        }
   function rgsRenderHorizontal(currentStatus) {
     const stepsEl = rgsEl('#steps-h');
     if (!stepsEl) return;
