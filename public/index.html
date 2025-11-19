@@ -2140,7 +2140,7 @@ ease;
       // Handle special cases for "Ready for Delivery" and "Shipment Delivered"
       const isSpecialStatus = ["Ready for Delivery", "Shipment Delivered"].includes(rgsCurrentStatus);
       const etaLabel = isSpecialStatus ? rgsCurrentStatus : "Eta";
-      const bottomLabel = isSpecialStatus ? rgsCurrentStatus : "Expected Arrival";
+      const bottomLabel = isSpecialStatus ? rgsCurrentStatus : eta;
 
       // Detect reverse: if max ever > current
       const allStatuses = RGS_PHASES.map(p => p.label);
@@ -2220,6 +2220,7 @@ ease;
   }
 
   function rgsRenderVerticalTimeline(history, eta) {
+    console.log('Rendering vertical timeline with history:', history, 'and eta:', eta);
             const panel = rgsEl('#timelinePanel');
             panel.innerHTML = '';
             // Timeline track line create karo
@@ -2258,6 +2259,7 @@ ease;
             });
             // ETA box add karo
             const etaBox = document.createElement('div');
+            console.log('Adding ETA box with eta:', eta);
             etaBox.style.textAlign = 'center';
             etaBox.style.marginTop = '18px';
             etaBox.innerHTML = `
